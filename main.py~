@@ -1,0 +1,393 @@
+import copy
+import argparse
+
+parser = argparse.ArgumentParser(description='Toggle verbose mode')
+
+parser.add_argument('--verbose', '-v', action='store_true')
+args = parser.parse_args()
+
+print(args.verbose)
+
+
+class Connector(object):
+    def __init__(self, name = None, independent = False):
+        self.name = name
+        self.value = None
+        self.informant = None
+        self.constraints = []
+        self.independent = independent
+
+    def set_value(self, source, value):
+        # if self.informant is independent, its values are independent of other 
+        # connectors and can only be changed by the user.
+
+        # Value can only be changed by user if its independent
+        if (source != 'user' and not self.independent) or (source == 'user'
+                                                           and self.independent):
+            pass
+        if True:
+            self.informant, self.value = source, value
+            if self.name is not None: 
+                print(self.name, '=', value)
+            self.inform_all_except(source, 'new_val')
+        else:
+            print('Cannot change:', self.value , 'vs', value)
+
+    def forget(self, source):
+        if self.informant is source:
+            self.informant, self.value = None, None
+            if self.name is not None:
+                print(self.name, 'is forgetten')
+            self.inform_all_except(source, 'forget')
+
+    def inform_all_except(self, source, message):
+        for c in self.constraints:
+            if c != source:
+                getattr(c, message)()
+                
+    def has_value(self):
+        return self.value is not None
+
+    def connect(self, source):
+        self.constraints.append(source)
+
+class Constraint(object):
+    def __init__(self, values, operation):
+        self.connectors = values
+        self.operation = operation
+        for c in self.connectors:
+            c.connect(self)
+
+    def new_val(self):
+        pass
+
+    def forget(self):
+        for c in self.connectors:
+            c.forget(self)
+
+class Gate(Constraint):
+    # A gate has a list of inputs and outputs and an operation
+    
+    # Operation can be a Gate object, in that case it will connect the inputs
+    # and outputs to the Gate
+    
+    # If operation is a function, it is evaluated with the inputs passed as its
+    # arguments
+    def __init__(self, inputs, outputs, operation):
+        self.inputs = inputs
+        self.outputs = outputs
+        Constraint.__init__(self, inputs + outputs, operation)
+        
+    def new_val(self):
+        #Last entry of self.connectors is the output
+        assert len(self.inputs) > 0, \
+            'Gate must have at least one input!'
+        for c in self.inputs:
+            if not c.has_value(): return
+        values = [i.value for i in self.inputs]
+        result = self.operation(*values)
+        for i in range(len(result)):
+            self.outputs[i].set_value(self, result[i])
+    @property
+    def independent_inputs():
+        pass
+
+class Chip(object):
+    def __init__(self):
+        self.chips = {}
+        self.gates = []
+        self.connected_pins = []
+        self.in_name_counter = 0
+        self.out_name_counter = 0
+        self.make_starting_chips()
+    
+    class MakeChip(object):
+        def __init__(self, operation, len_inputs, len_outputs):
+            self.len_inputs = len_inputs
+            self.len_outputs = len_outputs
+            self.inputs = [None for _ in range(len_inputs)]
+            self.outputs = [None for _ in range(len_outputs)]
+            self.operation = operation # for testing
+            self.make_gate_function = lambda inputs, outputs: Gate(inputs, outputs, operation)
+
+    def make_starting_chips(self):
+        and_chip = lambda: self.MakeChip(lambda a, b: [a and b], 2, 1)
+        or_chip = lambda: self.MakeChip(lambda a, b: [a or b], 2, 1)
+        not_chip = lambda: self.MakeChip(lambda a: [[1, 0][a]], 1, 1)
+        self.chips = locals()
+
+    def simulate_chip(self, chip, inputs):
+        # chip is an item in the chips dictionary
+        print(inputs, chip().operation(*inputs))
+    
+    def add_gate(self, gate):
+        for i in range(gate.len_inputs):
+            self.in_name_counter += 1
+            c = Connector('in'+str(self.in_name_counter), True)
+            gate.inputs[i] = c
+
+        for i in range(gate.len_outputs):
+            self.out_name_counter += 1
+            c = Connector('out'+str(self.out_name_counter), True)
+            gate.outputs[i] = c    
+        self.gates.append(gate)
+    
+    def connect_gates(self, gate1, gate2):
+        # format: gate1 = [gate, pin_no., pin_type]
+        # pin_type: 0 is input, 1 is output
+       
+        if gate2[2] == 0:
+            pin = gate2[0].inputs[gate2[1]]
+        else:
+            pin = gate2[0].outputs[gate2[1]]
+            
+        if gate1[2] == 0:
+            gate1[0].inputs[gate1[1]] = pin
+        else:
+            gate1[0].outputs[gate1[1]] = pin
+
+        if pin not in self.connected_pins:
+            self.connected_pins.append(pin)
+
+    def connect_out_in(self, output_gate, output_pin, input_gate, input_pin):
+        pin = output_gate.outputs[output_pin]
+        input_gate.inputs[input_pin] = pin
+        
+        if pin not in self.connected_pins:
+            self.connected_pins.append(pin)
+
+    def connect_in_in(self, in_gate1, in_pin1, in_gate2, in_pin2):
+        pin = in_gate2.inputs[in_pin2]
+        in_gate1.inputs[in_pin1] = pin
+
+    def make_chip_from_gates(self, chip_name):
+        if chip_name in self.chips:
+            print('Name already used!!')
+            return  
+        f_gates = self.gates
+        f_connected_pins = self.connected_pins
+        inputs = []
+        outputs = []
+        for gate in f_gates:
+            for i in gate.inputs:
+                if i not in f_connected_pins:
+                    if i not in inputs:
+                        inputs.append(i)
+            for i in gate.outputs:
+                if i not in f_connected_pins:
+                    if i not in outputs:
+                        outputs.append(i)
+            gate.make_gate_function(gate.inputs, gate.outputs)
+        print(inputs)
+        print(outputs)
+        print(f_connected_pins)
+        print(len(outputs), len(inputs))
+        def func():        
+            def operation(*input_list):
+                for i in range(len(input_list)): 
+                    inputs[i].set_value('chip', input_list[i])
+                output_list = [output.value for output in outputs]
+                return output_list
+            return self.MakeChip(operation, len(inputs), len(outputs))
+        self.gates = []
+        self.connected_pins = []
+        self.in_name_counter = 0
+        self.out_name_counter = 0
+        self.chips[chip_name] = func
+
+c = Chip()
+
+#########
+#  XOR  #
+#########
+
+c.add_gate(c.chips['and_chip']())
+c.add_gate(c.chips['and_chip']())
+c.add_gate(c.chips['not_chip']())
+c.add_gate(c.chips['not_chip']())
+c.add_gate(c.chips['or_chip']())
+
+ag1 = c.gates[0]
+ag2 = c.gates[1]
+ng1 = c.gates[2]
+ng2 = c.gates[3]
+og1 = c.gates[4]
+
+c.connect_out_in(ng1, 0, ag1, 0)
+c.connect_out_in(ng2, 0, ag2, 1)
+c.connect_out_in(ag1, 0, og1, 0)
+c.connect_out_in(ag2, 0, og1, 1)
+
+c.connect_in_in(ag1, 1, ng2, 0)
+c.connect_in_in(ag2, 0, ng1, 0)
+
+c.make_chip_from_gates('xor')
+
+#c.simulate_chip(c.chips['xor'], [0,0])
+#c.simulate_chip(c.chips['xor'], [1,0])
+#c.simulate_chip(c.chips['xor'], [0,1])
+#c.simulate_chip(c.chips['xor'], [1,1])
+
+#########
+#FULLADD#
+#########
+
+c.add_gate(c.chips['and_chip']())
+c.add_gate(c.chips['and_chip']())
+c.add_gate(c.chips['xor']())
+c.add_gate(c.chips['xor']())
+c.add_gate(c.chips['or_chip']())
+
+ag1 = c.gates[0]
+ag2 = c.gates[1]
+xg1 = c.gates[2]
+xg2 = c.gates[3]
+og1 = c.gates[4]
+
+c.connect_out_in(xg1, 0, xg2, 0)
+c.connect_out_in(xg1, 0, ag1, 0)
+c.connect_out_in(ag1, 0, og1, 0)
+c.connect_out_in(ag2, 0, og1, 1)
+
+c.connect_in_in(ag2, 1, xg1, 1)
+c.connect_in_in(ag2, 0, xg1, 0)
+c.connect_in_in(ag1, 1, xg2, 1)
+
+c.make_chip_from_gates('full_adder')
+
+c.simulate_chip(c.chips['full_adder'], [1,0,1])
+
+# returns [sum, carry]
+
+c.simulate_chip(c.chips['full_adder'], [0,0,0])
+
+"""
+c.add_gate(c.chips['and_chip']())
+c.add_gate(c.chips['and_chip']())
+c.add_gate(c.chips['not_chip']())
+ag1 = c.gates[0]
+ag2 = c.gates[1]
+ng = c.gates[2]
+c.connect_gates([ag1, 0, 1], [ag2, 0, 0])
+c.connect_gates([ag2, 0, 1], [ng, 0, 0])
+c.make_chip_from_gates('triple_nand')
+
+
+c.add_gate(c.chips['triple_nand']())
+c.add_gate(c.chips['triple_nand']())
+
+ta1 = c.gates[0]
+ta2 = c.gates[1]
+
+c.connect_gates([ta1, 0, 1], [ta2, 0, 0])
+c.make_chip_from_gates('double_triple_nand')
+c.simulate_chip(c.chips['double_triple_nand'], [1, 1, 0, 1, 1])
+"""
+
+"""
+
+    a = Connector('A', True)
+    b = Connector('B', True)
+    c = Connector('C', True)
+    
+    i = Connector('i')
+    o = Connector('O')
+    out = Connector('out')
+
+    f = Connector('f')
+    
+    and_gate([a, b], [i])
+    and_gate([i, c], [o])
+    not_gate([o], [out])
+    
+    a.set_value('user', False)
+    b.set_value('user', True)
+    a.set_value('user', True)
+    c.set_value('user', True)
+
+class UnaryGate(Constraint):
+    def new_val(self):
+        try:
+            a, b = self.connectors
+            ab = self.operation
+        except:
+            print('Incorrect usage: UnaryGate([a, b], ab)')
+
+        if a.has_value():
+            b.set_value(self, ab(a.value))
+
+
+class BinaryGate(Constraint):
+    def new_val(self):
+        try:
+            a, b, c = self.connectors
+            abc = self.operation
+        except:
+            print('Incorrect usage: BinaryGate([a, b, c], abc)')
+        
+        if a.has_value() and b.has_value():
+            c.set_value(self, abc(a.value, b.value))
+
+def and_gate(a, b, c):
+    return BinaryGate([a, b, c], lambda a, b: a and b)
+
+def not_gate(a, b):
+    return UnaryGate([a, b], lambda a: not a)
+"""
+
+"""
+class TernaryConstraint(Constraint):
+    def new_val(self):
+        try:
+            a, b, c = self.connectors
+            ab, ca, cb = self.operations
+        except:
+            print('Incorrect usage: TernaryConstraint([a, b, c], [ab, ca, cb])')
+        av, bv, cv = [connector.has_value() for connector in self.connectors]
+        if av and bv:
+            c.set_value(self, ab(a.value, b.value))
+        elif av and cv:
+            b.set_value(self, ca(c.value, a.value))
+        elif bv and cv:
+            a.set_value(self, cb(c.value, b.value))
+            
+def addern(a, b, c):
+    from operator import add, sub
+    return TernaryConstraint([a, b, c], [add, sub, sub])
+
+def multipliern(a, b, c):
+    from operator import mul, truediv
+    return TernaryConstraint([a, b, c], [mul, truediv, truediv])
+
+def constantn(connector, value):
+    connector.set_value(Constraint([], []), value)
+
+def converter_new(c, f):
+    #Connect c to f to convert from Celsius to Fahrenheit.
+    u, v, w, x, y = [Connector() for _ in range(5)]
+    multipliern(c, w, u)
+    multipliern(v, x, u)
+    addern(v, y, f)
+    constantn(w, 9)
+    constantn(x, 5)
+    constantn(y, 32)
+
+"""
+"""
+                new_gate = copy.deepcopy(gate)
+                for i in range(len(gate.inputs)):
+                    if gate.inputs[i] not in f_connected_pins:
+                        new_gate.inputs[i] = copy.deepcopy(gate.inputs[i])
+                        inputs.append(new_gate.inputs[i])
+                    else:
+                        new_gate.inputs[i] = copy.deepcopy(gate.inputs[i])
+                        
+                for o in range(len(gate.outputs)):
+                    if gate.outputs[o] not in f_connected_pins:
+                        new_gate.outputs[o] = copy.deepcopy(gate.outputs[o])
+                        outputs.append(new_gate.outputs[o])
+                    else:
+                        new_gate.outputs[o] = copy.deepcopy(gate.outputs[o])
+
+                new_gate.make_gate_function(new_gate.inputs, new_gate.outputs)
+"""

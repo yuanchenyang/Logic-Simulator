@@ -1,6 +1,8 @@
 import copy
 import argparse
-
+import os
+import sys
+import pickle
 import graphics
 
 parser = argparse.ArgumentParser(description='Toggle verbose mode')
@@ -261,10 +263,13 @@ def draw_interface(canvas):
     canvas.draw_text(selected_chip, (230, 20))
     canvas.draw_text('Deselect Chip', (150, 35))
     canvas.draw_text('Simulate Chip', (150, 50))
+    canvas.draw_text('Remove Chip', (150, 65))
     canvas.draw_text('Add Gate', (300, 20))
     canvas.draw_text('Clear Selected Gate', (400, 20))
     canvas.draw_text('Create Chip', (520, 20))
     canvas.draw_text('Clear', (520, 40))
+    canvas.draw_text('Save', (520, 60))
+    canvas.draw_text('Load', (520, 80))
     if add_chip:
        canvas.draw_polygon(graphics.rectangle_points((300-3, 20-3), 56 , 21), filled = 0)
     elif start_connect != []:
@@ -278,6 +283,8 @@ def check_buttons(pos):
         return 'deselect'
     elif x in range(150, 220) and y in range(45, 60):
         return 'simulate'
+    elif x in range(150, 220) and y in range(60, 75):
+        return 'remove'
     elif x in range(300, 400) and y in range(15, 30):
         return 'add'
     elif x in range(400, 500) and y in range(15, 30):
@@ -286,6 +293,10 @@ def check_buttons(pos):
         return 'chip'
     elif x in range(520, 570) and y in range(35, 50):
         return 'clear'
+    elif x in range(520, 570) and y in range(55, 70):
+        return 'save'
+    elif x in range(520, 570) and y in range(75, 90):
+        return 'load'
     
     return None
     
@@ -340,6 +351,10 @@ while True:
             add_chip = False
             start_connect = []
             lines = []
+        elif pressed_button == 'remove' and selected_chip is not None:
+            _ = c.chips.pop(selected_chip)
+            selected_chip = None
+            add_chip = False
         elif pressed_button == 'clear':
             c.gates = []
             c.connected_pins = []
@@ -353,6 +368,7 @@ while True:
             inputs = list(eval(input("Please specify the input pins: ")))
             print(inputs, selected_chip)
             print(c.simulate_chip(c.chips[selected_chip], inputs))
+
 
     if selected_chip is not None and add_chip:
         c.add_gate(c.chips[selected_chip](), pos)

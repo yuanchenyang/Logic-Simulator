@@ -1,531 +1,182 @@
-import copy
-import argparse
+import graphics
+import chip
 import os
 import sys
 import pickle
-import graphics
 
-parser = argparse.ArgumentParser(description='Toggle verbose mode')
+from itertools import product
 
-parser.add_argument('--verbose', '-v', action='store_true')
-arguments = parser.parse_args()
-
-class Connector(object):
-    def __init__(self, name = None, independent = False):
+class Button(object):
+    def __init__(self, name, pos, width, height, action):
         self.name = name
-        self.value = None
-        self.informant = None
-        self.constraints = []
-        self.independent = independent
-
-    def set_value(self, source, value):
-        # if self.informant is independent, its values are independent of other 
-        # connectors and can only be changed by the user.
-
-        # Value can only be changed by user if its independent
-        if (source != 'user' and not self.independent) or (source == 'user'
-                                                           and self.independent):
-            pass
-        if True:
-            global args
-            self.informant, self.value = source, value
-            if self.name is not None and arguments.verbose: 
-                print(self.name, '=', value)
-            self.inform_all_except(source, 'new_val')
-        else:
-            print('Cannot change:', self.value , 'vs', value)
-
-    def forget(self, source):
-        if self.informant is source:
-            self.informant, self.value = None, None
-            if self.name is not None:
-                print(self.name, 'is forgetten')
-            self.inform_all_except(source, 'forget')
-
-    def inform_all_except(self, source, message):
-        for c in self.constraints:
-            if c != source:
-                getattr(c, message)()
-                
-    def has_value(self):
-        return self.value is not None
-
-    def connect(self, source):
-        self.constraints.append(source)
-
-class Constraint(object):
-    def __init__(self, values, operation):
-        self.connectors = values
-        self.operation = operation
-        for c in self.connectors:
-            c.connect(self)
-
-    def new_val(self):
-        pass
-
-    def forget(self):
-        for c in self.connectors:
-            c.forget(self)
-
-class Gate(Constraint):
-    # A gate has a list of inputs and outputs and an operation
-    
-    def __init__(self, inputs, outputs, operation):    
-        self.inputs = inputs
-        self.outputs = outputs
-        Constraint.__init__(self, inputs + outputs, operation)
-        
-    def new_val(self):
-        #Last entry of self.connectors is the output
-        assert len(self.inputs) > 0, \
-            'Gate must have at least one input!'
-        for c in self.inputs:
-            if not c.has_value(): return
-        values = [i.value for i in self.inputs]
-        result = self.operation(*values)
-        for i in range(len(result)):
-            self.outputs[i].set_value(self, result[i])
-
-class Chip(object):
-    def __init__(self):
-        self.chips = {}
-        self.gates = []
-        self.connected_pins = []
-        self.in_name_counter = 0
-        self.out_name_counter = 0
-        self.make_starting_chips()
-        self.click_positions = {}
-    
-    class MakeChip(object):
-        def __init__(self, operation, len_inputs, len_outputs, name):
-            self.name = name
-            self.x = None
-            self.y = None 
-            self.len_inputs = len_inputs
-            self.len_outputs = len_outputs
-            self.inputs = [None for _ in range(len_inputs)]
-            self.outputs = [None for _ in range(len_outputs)]
-            self.operation = operation # for testing
-            self.make_gate_function = lambda inputs, outputs: Gate(inputs,
-                                                           outputs, operation)
-        def draw(self, canvas):
-            # x, y are the top left coordinates
-            self.height = max(len(self.inputs), len(self.outputs)) * 15 
-            self.width = 100
-            canvas.draw_polygon(graphics.rectangle_points((self.x, self.y),
-                        self.width, self.height), fill_color = None, filled = 0)
-            canvas.draw_text(self.name, (self.x + 20, self.y))
-            for i in range(len(self.inputs)):
-                canvas.draw_text('i'+str(i), (self.x + 5, self.y + 15*i))
-
-            for j in range(len(self.outputs)):
-                canvas.draw_text('o' + str(j), (self.x + self.width - 20 ,
-                                         self.y + 15*j))
-        def click_position(self, position):
-            # checks to see if the click lands on the object
-            # returns: index, type
-            x, y = position
-            if x in range(self.x, self.x + self.width) \
-                    and y in range(self.y, self.y + self.width):
-                if x in range(self.x, self.x + 20):
-                    # Clicks input
-                    pos = int((y-self.y)/15)
-                    if pos in range(self.len_inputs):
-                        return pos, 0
-                elif x in range(self.x + self.width - 20, self.x + self.width):
-                    # Clicks output
-                    pos = int((y-self.y)/15)
-                    if pos in range(self.len_outputs):
-                        return pos, 1
-            return None, None
-            
-
-    def make_starting_chips(self):
-        and_chip = lambda: self.MakeChip(lambda a, b: [a and b], 2, 1,
-                                         'and_chip')
-        or_chip = lambda: self.MakeChip(lambda a, b: [a or b], 2, 1, 'or_chip')
-        not_chip = lambda: self.MakeChip(lambda a: [[1, 0][a]], 1, 1, 'not_chip')
-        self.chips = locals()
-
-    def simulate_chip(self, chip, inputs):
-        # chip is an item in the chips dictionary
-        return inputs, chip().operation(*inputs)
-    
-    def add_gate(self, gate, pos = None):
-        if pos is not None:
-            gate.x, gate.y = pos
-        for i in range(gate.len_inputs):
-            self.in_name_counter += 1
-            c = Connector('in'+str(self.in_name_counter), True)
-            gate.inputs[i] = c
-
-        for i in range(gate.len_outputs):
-            self.out_name_counter += 1
-            c = Connector('out'+str(self.out_name_counter), True)
-            gate.outputs[i] = c    
-        self.gates.append(gate)
-    
-    def connect_gates(self, gate1, gate2):
-        # format: gate1 = [gate, pin_no., pin_type]
-        # pin_type: 0 is input, 1 is output
-       
-        if gate2[2] == 0:
-            pin = gate2[0].inputs[gate2[1]]
-        else:
-            pin = gate2[0].outputs[gate2[1]]
-            
-        if gate1[2] == 0:
-            gate1[0].inputs[gate1[1]] = pin
-        else:
-            gate1[0].outputs[gate1[1]] = pin
-
-        if pin not in self.connected_pins:
-            self.connected_pins.append(pin)
-
-    def connect_out_in(self, output_gate, output_pin, input_gate, input_pin):
-        pin = output_gate.outputs[output_pin]
-        input_gate.inputs[input_pin] = pin
-        
-        if pin not in self.connected_pins:
-            self.connected_pins.append(pin)
-
-    def connect_in_in(self, in_gate1, in_pin1, in_gate2, in_pin2):
-        pin = in_gate2.inputs[in_pin2]
-        in_gate1.inputs[in_pin1] = pin
-
-    def make_chip_from_gates(self, chip_name):
-        if chip_name in self.chips:
-            print('Name already used!!')
-            return  
-        f_gates = self.gates
-        f_connected_pins = self.connected_pins
-        inputs = []
-        outputs = []
-        for gate in f_gates:
-            for i in gate.inputs:
-                if i not in f_connected_pins:
-                    if i not in inputs:
-                        inputs.append(i)
-            for i in gate.outputs:
-                if i not in f_connected_pins:
-                    if i not in outputs:
-                        outputs.append(i)
-            gate.make_gate_function(gate.inputs, gate.outputs)
-        """
-        print(inputs)
-        print(outputs)
-        print(f_connected_pins)
-        print(len(outputs), len(inputs))
-        """
-        def func():        
-            def operation(*input_list):
-                for i in range(len(input_list)): 
-                    inputs[i].set_value('chip', input_list[i])
-                output_list = [output.value for output in outputs]
-                return output_list
-            return self.MakeChip(operation, len(inputs), len(outputs), chip_name)
-        self.gates = []
-        self.connected_pins = []
-        self.in_name_counter = 0
-        self.out_name_counter = 0
-        self.chips[chip_name] = func
-        
+        self.x, self.y, = pos
+        self.width = width
+        self.height = height
+        self.action = action
     def draw(self, canvas):
-        counter = 0
-        for chip_name, chip_object in self.chips.items():
-            if chip_object is not self:
-                canvas.draw_text(chip_name, (20, 20 + counter * 15))
-                self.click_positions[chip_name] = (20, 15 + counter * 15)
-                counter += 1
+        canvas.draw_text(self.name, (self.x, self.y))
+    def do_action_if_clicked(self, pos, parameters):
+        px, py = pos
+        if px in range(self.x, self.x + self.width - 5) and \
+           py in range(self.y, self.y + self.height):
+            self.action(parameters)
+
+class Parameters(object):
+    def __init__(self, c):
+        self.chip = c
+        self.reset()
+    def reset(self):
+        self.lines = []
+        # [Position, [chip_name, index], type]
+        self.start_connect = []
+        self.add_chip = False
+        self.selected_chip = None
+        self.selected_remove_gate = False
         
-    def click_on_chip(self, pos):
-        # returns the chip that is clicked, returns None if no chip is clicked
-        x, y = pos
-        for name, position in self.click_positions.items():
-            xp, yp = position
-            if x in range(xp, xp + 50) and y in range(yp + 5, yp + 20):
-                return name
-        return None
-    
-canvas = graphics.Canvas()
-c = Chip()
-selected_chip = None
-add_chip = False
+def deselect_chip(parameters):
+    parameters.selected_chip = None
 
-# [Position, [chip_name, index], type]
-start_connect = []
+def add_gate(parameters):
+    parameters.add_chip = not parameters.add_chip
 
-lines = []
+def remove_gate(parameters):
+    parameters.selected_remove_gate = not parameters.selected_remove_gate
 
+def clear_select(parameters):
+    parameters.start_connect = []
+
+def make_chip(parameters):
+    name = input('Please enter a name for your chip: ')
+    parameters.chip.make_chip_from_gates(name)
+    parameters.reset()
+
+def remove_chip(parameters):
+    if parameters.selected_chip:
+        _ = parameters.chip.chips.pop(parameters.selected_chip)
+        parameters.selected_chip = None
+        parameters.add_chip = False
+
+def clear(parameters):
+    parameters.reset()
+    parameters.chip.reset()
+
+def simulate(parameters):
+    if parameters.selected_chip:
+        run_chip = lambda inputs: parameters.chip.simulate_chip(
+                parameters.chip.chips[parameters.selected_chip], inputs)
+        inputs = input("Please specify the input pins: ")
+        if inputs != 'all':
+            inputs = list(eval(inputs))
+            combinations = [inputs]
+        else:
+            num_inputs = parameters.chip.chips[parameters.selected_chip
+                                               ]().len_inputs
+            if num_inputs > 5:
+                return 'Too many inputs to simulate simultaneously'
+            args = [[1, 0] for _ in range(num_inputs)]
+            combinations = list(product(*args))
+        print(inputs, parameters.selected_chip)
+        for comb in combinations:
+            run_chip(comb)
+
+def save(parameters):
+    save_file_name = input('Please enter a file name to save to:')
+    pickle.dump(parameters.chip.chips, open(save_file_name, 'wb'))
+
+def load(parameters):
+    load_file_name = input('Please enter a file name to load from:')
+    if os.path.isfile(load_file_name):
+        parameters.chip.chips = pickle.load(open(load_file_name, 'rb'))
+
+buttons = [Button('Deselect Chip', (150, 35), 70, 15, deselect_chip),
+           Button('Simulate Chip', (150, 50), 70, 15, simulate),
+           Button('Remove Chip', (150, 65), 70, 15, remove_chip),
+           Button('Add Gate', (300, 20), 100, 15, add_gate),
+           Button('Clear Selected Gate', (400, 20), 100, 15, clear_select),
+           Button('Create Chip', (520, 20), 70, 15, make_chip),
+           Button('Clear', (520, 40), 70, 15, clear),
+           Button('Remove Gate', (520, 60), 70, 15, remove_gate),
+           # Does not work
+           # Button('Save', (520, 80), 70, 15, save),
+           # Button('Load', (520, 100), 70, 15, load)
+           ]
+            
 def draw_interface(canvas):
-    global selected_chip, add_chip, start_connect
+    global buttons
     canvas.draw_text('Selected Chip:', (150, 20))
-    canvas.draw_text(selected_chip, (230, 20))
-    canvas.draw_text('Deselect Chip', (150, 35))
-    canvas.draw_text('Simulate Chip', (150, 50))
-    canvas.draw_text('Remove Chip', (150, 65))
-    canvas.draw_text('Add Gate', (300, 20))
-    canvas.draw_text('Clear Selected Gate', (400, 20))
-    canvas.draw_text('Create Chip', (520, 20))
-    canvas.draw_text('Clear', (520, 40))
-    canvas.draw_text('Save', (520, 60))
-    canvas.draw_text('Load', (520, 80))
-    if add_chip:
+    for b in buttons:
+        b.draw(canvas)
+
+def update_interface(canvas, parameters):
+    for gate in parameters.chip.gates:
+        gate.draw(canvas)
+    parameters.chip.draw(canvas)
+    canvas.draw_text(parameters.selected_chip, (230, 20))
+    for line in parameters.lines:
+        canvas.draw_polygon(line)
+    if parameters.add_chip:
        canvas.draw_polygon(graphics.rectangle_points((300-3, 20-3), 56 , 21), filled = 0)
-    elif start_connect != []:
-        x , y = start_connect[0]
+    elif parameters.selected_remove_gate:
+       canvas.draw_polygon(graphics.rectangle_points((520-3, 60-3), 76 , 21), filled = 0)
+    elif parameters.start_connect != []:
+        x , y = parameters.start_connect[0]
         canvas.draw_polygon(graphics.rectangle_points((x-7, y-7), 14, 14)
                             , filled = 0)
-        
-def check_buttons(pos):
-    x, y = pos
-    if x in range(150, 220) and y in range(30, 45):
-        return 'deselect'
-    elif x in range(150, 220) and y in range(45, 60):
-        return 'simulate'
-    elif x in range(150, 220) and y in range(60, 75):
-        return 'remove'
-    elif x in range(300, 400) and y in range(15, 30):
-        return 'add'
-    elif x in range(400, 500) and y in range(15, 30):
-        return 'clear_select'
-    elif x in range(520, 570) and y in range(15, 30):
-        return 'chip'
-    elif x in range(520, 570) and y in range(35, 50):
-        return 'clear'
-    elif x in range(520, 570) and y in range(55, 70):
-        return 'save'
-    elif x in range(520, 570) and y in range(75, 90):
-        return 'load'
-    
-    return None
-    
+
+canvas = graphics.Canvas(width = 600, height = 768)
+parameters = Parameters(chip.Chip())
+
 while True:
     canvas.clear()
     draw_interface(canvas)
-    for gate in c.gates:
-        gate.draw(canvas)
-    c.draw(canvas)
-    for line in lines:
-        canvas.draw_polygon(line)
+    update_interface(canvas, parameters)
     pos, _ = canvas.wait_for_click()
-    pressed_chip = c.click_on_chip(pos)
-    pressed_button = check_buttons(pos)
+    pressed_chip = parameters.chip.click_on_chip(pos)
     #print(pos)
-
-    for gate in c.gates:
+        
+    for gate in parameters.chip.gates:
         index, t = gate.click_position(pos)
         if index is not None:
-            if start_connect != []:
-                pos1 = start_connect[0]
-                args1 = start_connect[1]
-                type1 = start_connect[2]
+            if parameters.start_connect != []:
+                pos1 = parameters.start_connect[0]
+                args1 = parameters.start_connect[1]
                 pos2 = pos
-                args2 = [gate, index]
-                type2 = t
-                args = args1 + args2
-                if type1 == 0 and type2 == 0:
-                    c.connect_in_in(*args)
-                else:
-                    c.connect_out_in(*args)
-                lines.append([pos1, pos2])
-                start_connect = []
+                args2 = [gate, index, t]
+                cant_connect = parameters.chip.connect_gates(args1, args2)
+                if cant_connect is None:
+                    parameters.lines.append([pos1, pos2])
+                    parameters.start_connect = []
             else:
-                start_connect = [pos, [gate, index], t]
-            
+                parameters.start_connect = [pos, [gate, index, t]] 
     
     if pressed_chip is not None:
-        selected_chip = pressed_chip
-    elif pressed_button is not None:
-        if pressed_button == 'deselect':
-            selected_chip = None
-        elif pressed_button == 'add':
-            add_chip = not add_chip
-            continue
-        elif pressed_button == 'clear_select':
-            start_connect = []
-        elif pressed_button == 'chip':
-            name = input('Please enter a name for your chip: ')
-            c.make_chip_from_gates(name)
-            selected_chip = None
-            add_chip = False
-            start_connect = []
-            lines = []
-        elif pressed_button == 'remove' and selected_chip is not None:
-            _ = c.chips.pop(selected_chip)
-            selected_chip = None
-            add_chip = False
-        elif pressed_button == 'clear':
-            c.gates = []
-            c.connected_pins = []
-            c.in_name_counter = 0
-            c.out_name_counter = 0
-            selected_chip = None
-            add_chip = False
-            start_connect = []
-            lines = []
-        elif pressed_button == 'simulate' and selected_chip is not None:
-            inputs = list(eval(input("Please specify the input pins: ")))
-            print(inputs, selected_chip)
-            print(c.simulate_chip(c.chips[selected_chip], inputs))
+        parameters.selected_chip = pressed_chip
 
+    if parameters.selected_chip is not None and parameters.add_chip:
+        parameters.chip.add_gate(parameters.chip.chips[
+                parameters.selected_chip](), pos)
+        parameters.add_chip = False
 
-    if selected_chip is not None and add_chip:
-        c.add_gate(c.chips[selected_chip](), pos)
-        add_chip = False
+    if parameters.selected_remove_gate:
+        for gate in parameters.chip.gates:
+            if gate.click_on_gate(pos):
+                parameters.chip.gates.remove(gate)
+                def remove_pin(pin, chip):
+                    if i in chip.connected_pins:
+                        chip.connected_pins.remove(i)
+                for i in gate.inputs:
+                    remove_pin(i, parameters.chip)
+                for i in gate.outputs:
+                    remove_pin(i, parameters.chip)
+                parameters.selected_remove_gate = False
+
+    for b in buttons:
+        b.do_action_if_clicked(pos, parameters)
             
 
 
 
 
-"""
-c = Chip()
-
-#########
-#  XOR  #
-#########
-
-c.add_gate(c.chips['and_chip']())
-c.add_gate(c.chips['and_chip']())
-c.add_gate(c.chips['not_chip']())
-c.add_gate(c.chips['not_chip']())
-c.add_gate(c.chips['or_chip']())
-
-ag1 = c.gates[0]
-ag2 = c.gates[1]
-ng1 = c.gates[2]
-ng2 = c.gates[3]
-og1 = c.gates[4]
-
-c.connect_out_in(ng1, 0, ag1, 0)
-c.connect_out_in(ng2, 0, ag2, 1)
-c.connect_out_in(ag1, 0, og1, 0)
-c.connect_out_in(ag2, 0, og1, 1)
-
-c.connect_in_in(ag1, 1, ng2, 0)
-c.connect_in_in(ag2, 0, ng1, 0)
-
-c.make_chip_from_gates('xor')
-
-c.simulate_chip(c.chips['xor'], [0,0])
-c.simulate_chip(c.chips['xor'], [1,0])
-c.simulate_chip(c.chips['xor'], [0,1])
-c.simulate_chip(c.chips['xor'], [1,1])
-"""
-
-"""
-#########
-#HALFADD#
-#########
-
-c.add_gate(c.chips['xor']())
-c.add_gate(c.chips['and_chip']())
-
-ag = c.gates[1]
-xg = c.gates[0]
-
-c.connect_in_in(ag, 0, xg, 0)
-c.connect_in_in(ag, 1, xg, 1)
-
-c.make_chip_from_gates('half_adder')
-# returns [sum, carry]
-
-#c.simulate_chip(c.chips['half_adder'], [0,0])
-#c.simulate_chip(c.chips['half_adder'], [0,1])
-#c.simulate_chip(c.chips['half_adder'], [1,0])
-#c.simulate_chip(c.chips['half_adder'], [1,1])
-
-#########
-#FULLADD#
-#########
-
-c.add_gate(c.chips['and_chip']())
-c.add_gate(c.chips['and_chip']())
-c.add_gate(c.chips['xor']())
-c.add_gate(c.chips['xor']())
-c.add_gate(c.chips['or_chip']())
-
-ag1 = c.gates[0]
-ag2 = c.gates[1]
-xg1 = c.gates[2]
-xg2 = c.gates[3]
-og1 = c.gates[4]
-
-c.connect_out_in(xg1, 0, xg2, 0)
-c.connect_out_in(xg1, 0, ag1, 0)
-c.connect_out_in(ag1, 0, og1, 0)
-c.connect_out_in(ag2, 0, og1, 1)
-
-c.connect_in_in(ag2, 1, xg1, 1)
-c.connect_in_in(ag2, 0, xg1, 0)
-c.connect_in_in(ag1, 1, xg2, 1)
-
-c.make_chip_from_gates('full_adder')
-# returns [sum, carry]
-
-#c.simulate_chip(c.chips['full_adder'], [0,0,0])
-#c.simulate_chip(c.chips['full_adder'], [0,0,1])
-#c.simulate_chip(c.chips['full_adder'], [0,1,0])
-#c.simulate_chip(c.chips['full_adder'], [0,1,1])
-#c.simulate_chip(c.chips['full_adder'], [1,0,0])
-#c.simulate_chip(c.chips['full_adder'], [1,0,1])
-#c.simulate_chip(c.chips['full_adder'], [1,1,0])
-#c.simulate_chip(c.chips['full_adder'], [1,1,1])
-
-#########
-#8BITADD#
-#########
-
-c.add_gate(c.chips['half_adder']())
-for _ in range(7):
-    c.add_gate(c.chips['full_adder']())
-
-a = [c.gates[i] for i in range(8)]
-
-for n in range(7):
-    c.connect_out_in(a[n], 1, a[n+1], 0)
-
-c.make_chip_from_gates('8-bit_adder')
-
-combine_2_lists = lambda a, b: [(a, b)[i][j] for j in range(len(a))
-                                             for i in (0, 1) ]
-
-def list_to_bin(l):
-    s = 0
-    for i in range(len(l)):
-        s += l[i] * pow(2, i)
-    return s
-l1 = [1,1,0,1,1,1,0,1]
-l2 = [1,0,1,1,0,1,1,1]
-
-_, answer = c.simulate_chip(c.chips['8-bit_adder'], combine_2_lists(l1, l2))
-                            
-print(list_to_bin(l1), '+', list_to_bin(l2), '=', list_to_bin(answer))
-"""
-
-
-"""
-c.add_gate(c.chips['and_chip']())
-c.add_gate(c.chips['and_chip']())
-c.add_gate(c.chips['not_chip']())
-ag1 = c.gates[0]
-ag2 = c.gates[1]
-ng = c.gates[2]
-c.connect_gates([ag1, 0, 1], [ag2, 0, 0])
-c.connect_gates([ag2, 0, 1], [ng, 0, 0])
-c.make_chip_from_gates('triple_nand')
-
-
-c.add_gate(c.chips['triple_nand']())
-c.add_gate(c.chips['triple_nand']())
-
-ta1 = c.gates[0]
-ta2 = c.gates[1]
-
-c.connect_gates([ta1, 0, 1], [ta2, 0, 0])
-c.make_chip_from_gates('double_triple_nand')
-c.simulate_chip(c.chips['double_triple_nand'], [1, 1, 0, 1, 1])
-"""
 
 """
 
